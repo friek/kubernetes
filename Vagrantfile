@@ -14,7 +14,7 @@ Vagrant.configure("2") do |config|
   # boxes at https://vagrantcloud.com/search.
   config.vm.box = "ubuntu/bionic64"
 
-  config.vm.define "k8master.mumasoft.nl"
+  config.vm.define "k8s-master.mumasoft.nl"
 
   # Disable automatic box update checking. If you disable this, then
   # boxes will only be checked for updates when the user runs
@@ -68,9 +68,9 @@ Vagrant.configure("2") do |config|
   # documentation for more information about their specific syntax and use.
   config.vm.provision "shell", inline: <<-SHELL
      # Fix the hostname
-     echo k8s.mumasoft.nl > /etc/hostname
-     hostname k8s.mumasoft.nl
-     echo "192.168.34.10 k8s.mumasoft.nl" >> /etc/hosts
+     echo k8s-master.mumasoft.nl > /etc/hostname
+     hostname k8s-master.mumasoft.nl
+     echo "192.168.34.10 k8s-master.mumasoft.nl" >> /etc/hosts
 
      apt-get update && apt-get install -y apt-transport-https curl ca-certificates gnupg-agent software-properties-common
      # Add kubernetes apt config. At this time (2019-12-24) xenial is the newest version
@@ -92,27 +92,52 @@ Vagrant.configure("2") do |config|
   "exec-opts": ["native.cgroupdriver=systemd"]
 }
 EOF
+    service docker restart
+
      # Pull the kubelet images
      kubeadm config images pull
 
      # Initialize the cluster
-     kubeadm init --pod-network-cidr=10.43.0.0/16 --apiserver-advertise-address=192.168.34.10
-     # Initialize the network driver
-     KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f https://docs.projectcalico.org/v3.11/manifests/calico.yaml
-     curl -L  https://github.com/projectcalico/calicoctl/releases/download/v3.11.1/calicoctl > /usr/local/bin/calicoctl
-     chmod 755 /usr/local/bin/calicoctl
-     # Install the config into the vagrant user's homedir and fix the docker group
+     kubeadm init --service-cidr=10.44.0.0/16 --pod-network-cidr=10.45.0.0/16 \
+      --apiserver-advertise-address 192.168.34.10 --service-dns-domain k8s.mumasoft.nl
+     # Remove the NoSchedule taint from the master node.
+     # This enables the scheduling of services on the master node.
+     KUBECONFIG=/etc/kubernetes/admin.conf kubectl taint nodes k8s-master.mumasoft.nl node-role.kubernetes.io/master:NoSchedule-
+ 
+     # Initialize the network driver.
+     # See also https://docs.projectcalico.org/v3.11/getting-started/kubernetes/installation/calico
+     curl -s https://docs.projectcalico.org/v3.11/manifests/calico-etcd.yaml -o /root/calico.yaml
+     sed -i "s|192.168.0.0/16|10.45.0.0/16|" /root/calico.yaml
+     sed -i "s|http://<ETCD_IP>|https://192.168.34.10|" /root/calico.yaml
+     sed -i "s|<ETCD_PORT>|2379|" /root/calico.yaml
+     sed -i "s/# etcd-key.*/etcd-key: \"$(base64 -w 0 < /etc/kubernetes/pki/etcd/server.key)\"/" /root/calico.yaml
+     sed -i "s/# etcd-cert.*/etcd-cert: \"$(base64 -w 0 < /etc/kubernetes/pki/etcd/server.crt)\"/" /root/calico.yaml
+     sed -i "s/# etcd-ca.*/etcd-ca: \"$(base64 -w 0 < /etc/kubernetes/pki/etcd/ca.crt)\"/" /root/calico.yaml
+     sed -i "s|etcd_ca: \"\".*|etcd_ca: \"/calico-secrets/etcd-ca\"|" /root/calico.yaml
+     sed -i "s|etcd_cert: \"\".*|etcd_cert: \"/calico-secrets/etcd-cert\"|" /root/calico.yaml
+     sed -i "s|etcd_key: \"\".*|etcd_key: \"/calico-secrets/etcd-key\"|" /root/calico.yaml
+
+     KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /root/calico.yaml
+     # Optional calicoctl binary.
+     # For some reason this may fail (github.com connection resets while downloading)
+     ( curl -s -L  https://github.com/projectcalico/calicoctl/releases/download/v3.11.1/calicoctl -o /usr/local/bin/calicoctl ; chmod 755 /usr/local/bin/calicoctl ) &
+     
+     # Install the kubectl config into the vagrant user's homedir.
+     # Also add the vagrant user to the docker group so the user can talk with docker.
      mkdir ~vagrant/.kube
      cp /etc/kubernetes/admin.conf ~vagrant/.kube/config
      chown -R vagrant:vagrant ~vagrant/.kube
      usermod -a -G docker vagrant
-     # And the dashboard
+
+     # Install the kubernetes dashboard
      KUBECONFIG=/etc/kubernetes/admin.conf kubectl create -f https://raw.githubusercontent.com/kubernetes/dashboard/master/aio/deploy/recommended.yaml
      KUBECONFIG=/etc/kubernetes/admin.conf kubectl create serviceaccount dashboard -n default 
      KUBECONFIG=/etc/kubernetes/admin.conf kubectl create clusterrolebinding dashboard-admin -n default --clusterrole=cluster-admin --serviceaccount=default:dashboard
      # Access the dashboard at http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy/#/login
      # Retrieve token for login:
      # kubectl get secret $(kubectl get serviceaccount dashboard -o jsonpath="{.secrets[0].name}") -o jsonpath="{.data.token}" | base64 --decode
+
      # Get join command for cluster: kubeadm token create --print-join-command
+
   SHELL
 end

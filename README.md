@@ -32,6 +32,23 @@ automatically installed. This is a vital piece of the kubernetes cluster.
 In the Vagrantfile a host local network is configured. The master node will get
 IP address 192.168.34.10.
 
+Kubernetes pods will get an IP address in 10.45.0.0/16. The services get an IP
+address from 10.44.0.0/16. A local route (from outside the VM) can be added to
+10.44.0.0/15 -> 192.168.34.10 to be able to reach all pods and services from
+the local host.
+
+### calicoctl
+
+This is a utility to access and modify the calico configuration. You'll need a
+bunch of environment vars to be able to use it as root:
+
+```bash
+export ETCD_ENDPOINTS=https://localhost:2379
+export ETCD_CA_CERT_FILE=/etc/kubernetes/pki/etcd/ca.crt
+export ETCD_CERT_FILE=/etc/kubernetes/pki/etcd/server.crt
+export ETCD_KEY_FILE=/etc/kubernetes/pki/etcd/server.key
+```
+
 ## Test configurations
 
 ### Traefik
